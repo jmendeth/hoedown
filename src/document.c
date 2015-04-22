@@ -3023,7 +3023,7 @@ static size_t parse_list(hoedown_document *doc, void *target, const uint8_t *dat
     if (current_mode == NORMAL_PARSING) {
       void *item_content = doc->rndr.object_get(0, &doc->data);
       parse_block(doc, item_content, work->data + offset, new_offset - offset, new_offset - offset, 0);
-      set_buffer_data(&doc->data.src[0], data, source, new_source);
+      set_buffer_data(&doc->data.src[0], data + start, source, new_source);
       set_buffer_data(&doc->data.src[1], work->data, offset, new_offset);
       doc->rndr.list_item(content, item_content, is_ordered, !is_loose, &doc->data);
       doc->rndr.object_pop(item_content, 0, &doc->data);
