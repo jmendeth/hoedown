@@ -4,7 +4,7 @@
 #define HOEDOWN_DOCUMENT_H
 
 #include "buffer.h"
-#include "autolink.h"
+#include "list.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -181,6 +181,12 @@ typedef struct hoedown_renderer_data {
   void *request;
   hoedown_internal *doc;
 } hoedown_renderer_data;
+
+typedef struct hoedown_range {
+  size_t source;
+  size_t size;
+  size_t skip;
+} hoedown_range;
 
 typedef struct hoedown_renderer {
   void *opaque;

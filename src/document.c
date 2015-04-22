@@ -88,6 +88,14 @@ typedef struct link_ref {
   int has_title;
 } link_ref;
 
+typedef struct buffer_mapping {
+  struct buffer_mapping *previous;
+
+  hoedown_buffer *buffer;
+  hoedown_list ranges;
+  size_t size;
+} buffer_mapping;
+
 struct hoedown_document {
   // Renderer stuff
   hoedown_renderer rndr;
@@ -119,6 +127,10 @@ struct hoedown_document {
   // Marker parsing
   link_ref *link_refs [LINK_REFS_TABLE_SIZE];
   hoedown_pool link_refs__pool;
+
+  // Other features: source mapping
+  buffer_mapping *mapping;
+  hoedown_pool mapping__pool;
 };
 
 
@@ -140,6 +152,21 @@ SIMPLE_ALLOCATOR(inline_data)
 SIMPLE_ALLOCATOR(inline_nesting)
 
 static void _free_pool_item(void *item, void *opaque) {
+  free(item);
+}
+
+
+static void *_new_buffer_mapping(void *opaque) {
+  buffer_mapping *mapping = hoedown_malloc(sizeof(buffer_mapping));
+  mapping->previous = NULL;
+  mapping->buffer = NULL;
+  hoedown_list_init(&mapping->ranges, sizeof(hoedown_range), 2);
+  return mapping;
+}
+
+static void _free_buffer_mapping(void *item, void *opaque) {
+  buffer_mapping *mapping = item;
+  hoedown_list_uninit(&mapping->ranges);
   free(item);
 }
 
@@ -3406,6 +3433,10 @@ hoedown_document *hoedown_document_new(
   memset(&doc->link_refs, 0, sizeof(doc->link_refs));
   hoedown_pool_init(&doc->link_refs__pool, 8, _new_link_ref, _free_pool_item, NULL);
 
+  // Other features: source mapping
+  doc->mapping = NULL;
+  hoedown_pool_init(&doc->mapping__pool, 8, _new_buffer_mapping, _free_buffer_mapping, NULL);
+
   return doc;
 }
 
@@ -3424,6 +3455,7 @@ void hoedown_document_free(hoedown_document *doc) {
   hoedown_pool_uninit(&doc->inline_data__pool);
   hoedown_pool_uninit(&doc->inline_nesting__pool);
   hoedown_pool_uninit(&doc->link_refs__pool);
+  hoedown_pool_uninit(&doc->mapping__pool);
 
   free(doc);
 }
@@ -3482,6 +3514,8 @@ void *hoedown_document_render(
   pop_link_refs(doc);
   memset(&doc->link_refs, 0, sizeof(doc->link_refs));
   assert(doc->link_refs__pool.size == doc->link_refs__pool.isize);
+  assert(doc->mapping == NULL);
+  assert(doc->mapping__pool.size == doc->mapping__pool.isize);
   return result;
 }
 
