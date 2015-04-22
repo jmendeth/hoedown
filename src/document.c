@@ -345,6 +345,161 @@ static inline void close_inline_data(hoedown_document *doc, void *target) {
 }
 
 
+// SOURCE MAPPING
+
+// Get a buffer from a pool, and create a mapping for it.
+static inline hoedown_buffer *get_mapped_buffer(hoedown_document *doc, hoedown_pool *pool) {
+  hoedown_buffer *buffer = hoedown_pool_get(pool);
+
+  buffer_mapping *mapping = hoedown_pool_get(&doc->mapping__pool);
+  mapping->previous = doc->mapping;
+  mapping->buffer = buffer;
+  mapping->ranges.size = 0;
+  mapping->size = 0;
+  doc->mapping = mapping;
+  return buffer;
+}
+
+// Return a buffer to its pool, and delete its mapping.
+static inline void pop_mapped_buffer(hoedown_document *doc, hoedown_pool *pool, hoedown_buffer *buffer) {
+  buffer_mapping *mapping = doc->mapping;
+  assert(mapping->buffer == buffer);
+  assert(mapping->size <= buffer->size);
+  doc->mapping = doc->mapping->previous;
+  hoedown_pool_pop(&doc->mapping__pool, mapping);
+  hoedown_pool_pop(pool, buffer);
+}
+
+// Copy ranges covering start..end into another list.
+// Returns position where the last copied range ends
+static size_t copy_ranges(hoedown_list *dest, const hoedown_list *src, size_t start, size_t end) {
+  size_t i = 0, count = src->size;
+  size_t position = 0, mark;
+  const hoedown_range *ranges = src->data;
+
+  // Find the first pertinent range
+  while (position <= start) {
+    if (i >= count) return start;
+    position += ranges[i].skip + ranges[i].size;
+    i++;
+  }
+
+  // Skip previous ranges
+  ranges += i-1;
+  count -= i-1;
+
+  // Find the last pertinent range
+  mark = position - ranges[0].size;
+  for (i = 1; i < count; i++) {
+    if (position + ranges[i].skip >= end) break;
+    position += ranges[i].skip + ranges[i].size;
+  }
+
+  // Copy pertinent ranges to dest!
+  if (i == 0) return start;
+  hoedown_list_grow(dest, dest->size + i);
+  hoedown_range *dranges = dest->data + dest->size*sizeof(hoedown_range);
+  memcpy(dranges, ranges, i*sizeof(hoedown_range));
+  dest->size += i;
+
+  // Adjust first range
+  if (likely(mark < start)) {
+    dranges[0].skip = 0;
+    dranges[0].size -= start - mark;
+    dranges[0].source += start - mark;
+  } else {
+    dranges[0].skip = start - mark;
+  }
+
+  // Adjust last range
+  if (likely(position > end)) {
+    dranges[i-1].size -= position - end;
+    return end;
+  }
+  return position;
+}
+
+// Locate a string in `mapping` or previous ones.
+static inline int locate_ranges(hoedown_list *ranges, const uint8_t *data, size_t size, const buffer_mapping *mapping, size_t *span) {
+  for (; mapping; mapping = mapping->previous) {
+    // Check to see if the data chunk points to this buffer
+    hoedown_buffer *buffer = mapping->buffer;
+    if (data < buffer->data || data + size > buffer->data + buffer->size)
+      continue;
+
+    // Search for the first range to cover this chunk of data
+    size_t start = data - buffer->data;
+    size_t end = start + size;
+    end = copy_ranges(ranges, &mapping->ranges, start, end);
+    if (span) *span = end - start;
+    return 1;
+  }
+  return 0;
+}
+
+// Put a string into a mapping's buffer, and map it.
+static inline void mapping_put(buffer_mapping *mapping, const buffer_mapping *srcmapping, const uint8_t *data, size_t size) {
+  hoedown_buffer *buffer = mapping->buffer;
+  assert(mapping->size <= buffer->size);
+
+  // Locate the data to put, append to current ranges
+  size_t first = mapping->ranges.size, span;
+  if (locate_ranges(&mapping->ranges, data, size, srcmapping, &span) && span) {
+    hoedown_range *ranges = mapping->ranges.data;
+    ranges[first].skip += buffer->size - mapping->size;
+    mapping->size = buffer->size + size;
+  }
+
+  // Put the data into the buffer
+  hoedown_buffer_put(buffer, data, size);
+}
+
+// Update a mapping as necessary to rewind the buffer to a certain size
+static inline void mapping_rewind(buffer_mapping *mapping, size_t size) {
+  hoedown_range *ranges = mapping->ranges.data;
+  assert(mapping->buffer->size >= size);
+  mapping->buffer->size = size;
+
+  while (size < mapping->size) {
+    hoedown_range *current = &ranges[mapping->ranges.size-1];
+    if (size > mapping->size - current->size) {
+      current->size -= mapping->size - size;
+      break;
+    }
+    mapping->size -= current->size + current->skip;
+    mapping->ranges.size--;
+  }
+}
+
+// Put a string into a buffer, search for its mapping, and map it.
+static inline void mapped_buffer_put(hoedown_document *doc, hoedown_buffer *buffer, const uint8_t *data, size_t size) {
+  buffer_mapping *mapping;
+  for (mapping = doc->mapping; mapping; mapping = mapping->previous) {
+    // Is this the mapping for our buffer?
+    if (mapping->buffer != buffer) continue;
+    mapping_put(mapping, mapping->previous, data, size);
+    return;
+  }
+
+  // We can't let this happen
+  abort();
+}
+
+// Search for a buffer's mapping, and rewind it to the specified size
+static inline void mapped_buffer_rewind(hoedown_document *doc, hoedown_buffer *buffer, size_t size) {
+  buffer_mapping *mapping;
+  for (mapping = doc->mapping; mapping; mapping = mapping->previous) {
+    // Is this the mapping for our buffer?
+    if (mapping->buffer != buffer) continue;
+    mapping_rewind(mapping, size);
+    return;
+  }
+
+  // We can't let this happen
+  abort();
+}
+
+
 // OTHER
 
 // Sets the data and size of a read-only buffer.
@@ -3525,3 +3680,8 @@ void *hoedown_document_render(
 void hoedown_preprocess(hoedown_buffer *ob, const uint8_t *data, size_t size) {
   normalize_spacing(ob, data, size);
 }
+
+int hoedown_document_locate(hoedown_internal *doc, hoedown_list *ranges, const uint8_t *data, size_t size) {
+  return locate_ranges(ranges, data, size, ((hoedown_document *)doc)->mapping, NULL);
+}
+

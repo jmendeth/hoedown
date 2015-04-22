@@ -260,6 +260,13 @@ void *hoedown_document_render(
   int is_inline, void *request
 );
 
+/* hoedown_document_locate: locate original position(s) of a chunk of Markdown */
+int hoedown_document_locate(
+  hoedown_internal *doc,
+  hoedown_list *ranges,
+  const uint8_t *data, size_t size
+);
+
 /* hoedown_document_free: deallocate a document processor */
 void hoedown_document_free(hoedown_document *doc);
 
