@@ -94,6 +94,9 @@ typedef struct buffer_mapping {
   hoedown_buffer *buffer;
   hoedown_list ranges;
   size_t size;
+
+  size_t last_i;
+  size_t last_position;
 } buffer_mapping;
 
 struct hoedown_document {
@@ -356,6 +359,8 @@ static inline hoedown_buffer *get_mapped_buffer(hoedown_document *doc, hoedown_p
   mapping->buffer = buffer;
   mapping->ranges.size = 0;
   mapping->size = 0;
+  mapping->last_i = 0;
+  mapping->last_position = 0;
   doc->mapping = mapping;
   return buffer;
 }
@@ -372,10 +377,16 @@ static inline void pop_mapped_buffer(hoedown_document *doc, hoedown_pool *pool, 
 
 // Copy ranges covering start..end into another list.
 // Returns position where the last copied range ends
-static size_t copy_ranges(hoedown_list *dest, const hoedown_list *src, size_t start, size_t end) {
-  size_t i = 0, count = src->size;
+static size_t copy_ranges(hoedown_list *dest, buffer_mapping *mapping, size_t start, size_t end) {
+  size_t i = 0, count = mapping->ranges.size;
   size_t position = 0, mark;
-  const hoedown_range *ranges = src->data;
+  const hoedown_range *ranges = mapping->ranges.data;
+
+  // Optimization: try to start from last looked up range
+  if (mapping->last_position <= start) {
+    i = mapping->last_i;
+    position = mapping->last_position;
+  }
 
   // Find the first pertinent range
   while (position <= start) {
@@ -390,17 +401,19 @@ static size_t copy_ranges(hoedown_list *dest, const hoedown_list *src, size_t st
 
   // Find the last pertinent range
   mark = position - ranges[0].size;
+  if (mark >= end) return start;
   for (i = 1; i < count; i++) {
     if (position + ranges[i].skip >= end) break;
     position += ranges[i].skip + ranges[i].size;
   }
 
   // Copy pertinent ranges to dest!
-  if (i == 0) return start;
   hoedown_list_grow(dest, dest->size + i);
   hoedown_range *dranges = dest->data + dest->size*sizeof(hoedown_range);
   memcpy(dranges, ranges, i*sizeof(hoedown_range));
   dest->size += i;
+  mapping->last_i = i-1 + mapping->ranges.size - count;
+  mapping->last_position = position - (ranges[i-1].skip + ranges[i-1].size);
 
   // Adjust first range
   if (likely(mark < start)) {
@@ -420,7 +433,7 @@ static size_t copy_ranges(hoedown_list *dest, const hoedown_list *src, size_t st
 }
 
 // Locate a string in `mapping` or previous ones.
-static inline int locate_ranges(hoedown_list *ranges, const uint8_t *data, size_t size, const buffer_mapping *mapping, size_t *span) {
+static inline int locate_ranges(hoedown_list *ranges, const uint8_t *data, size_t size, buffer_mapping *mapping, size_t *span) {
   for (; mapping; mapping = mapping->previous) {
     // Check to see if the data chunk points to this buffer
     hoedown_buffer *buffer = mapping->buffer;
@@ -430,7 +443,7 @@ static inline int locate_ranges(hoedown_list *ranges, const uint8_t *data, size_
     // Search for the first range to cover this chunk of data
     size_t start = data - buffer->data;
     size_t end = start + size;
-    end = copy_ranges(ranges, &mapping->ranges, start, end);
+    end = copy_ranges(ranges, mapping, start, end);
     if (span) *span = end - start;
     return 1;
   }
@@ -438,7 +451,7 @@ static inline int locate_ranges(hoedown_list *ranges, const uint8_t *data, size_
 }
 
 // Put a string into a mapping's buffer, and map it.
-static inline void mapping_put(buffer_mapping *mapping, const buffer_mapping *srcmapping, const uint8_t *data, size_t size) {
+static inline void mapping_put(buffer_mapping *mapping, buffer_mapping *srcmapping, const uint8_t *data, size_t size) {
   hoedown_buffer *buffer = mapping->buffer;
   assert(mapping->size <= buffer->size);
 
@@ -3625,7 +3638,7 @@ void *hoedown_document_render(
   // Add root mapping
   hoedown_buffer original = {(uint8_t *)data, size, 0, 0, NULL, NULL};
   hoedown_range root_range = {0, size, 0};
-  buffer_mapping root_mapping = {NULL, &original, {&root_range,1,0,0}, size};
+  buffer_mapping root_mapping = {NULL, &original, {&root_range,1,0,0}, size, 0,0};
   doc->mapping = &root_mapping;
 
   // Preprocess the input
